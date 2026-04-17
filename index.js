@@ -19,11 +19,22 @@ const userChats = new Map();
 let botReady = false;
 let client;
 
+// Memory-optimized Puppeteer settings
 const puppeteerOptions = {
     headless: true,
+    executablePath: process.env.CHROME_PATH || null, // Allow custom chrome path
     args: [
-        '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote', '--disable-gpu'
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu',
+        '--js-flags="--max-old-space-size=400"', // Limit V8 heap memory
+        '--disable-extensions',
+        '--disable-default-apps',
+        '--no-pings'
     ],
 };
 
@@ -59,21 +70,40 @@ function setupClientEvents() {
         qrcodeTerminal.generate(qr, {small: true});
         qrcode.toFile(path.join(__dirname, 'qr.png'), qr, (err) => {
             if (err) console.error('QR Save Error:', err);
-            else console.log('✅ QR Code updated and saved to qr.png');
         });
     });
 
-    client.on('ready', () => {
+    client.on('ready', async () => {
         botReady = true;
         console.log('✅ Curaid Bot is ONLINE!');
+        
+        // --- MEMORY OPTIMIZATION ---
+        // Block images, styles, and fonts to save RAM
+        try {
+            const page = await client.pupPage;
+            if (page) {
+                await page.setRequestInterception(true);
+                page.on('request', (req) => {
+                    if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
+                        req.abort();
+                    } else {
+                        req.continue();
+                    }
+                });
+                console.log('🧠 Memory Optimization: Heavy assets blocked successfully.');
+            }
+        } catch (e) {
+            console.warn('⚠️ Could not set up request interception, but bot is still running.');
+        }
     });
 
     client.on('remote_session_saved', () => console.log('💾 Session saved to MongoDB!'));
 
     client.on('message', async (msg) => {
         if (msg.from.includes('@g.us') || msg.from === 'status@broadcast' || msg.isStatus) return;
+        
         try {
-            console.log(`\n💬 Message from ${msg.from}: ${msg.body}`);
+            console.log(`\n💬 Message from ${msg.from}`);
             const chatWindow = await msg.getChat();
             await chatWindow.sendStateTyping();
 
@@ -81,6 +111,12 @@ function setupClientEvents() {
             if (!chatSession) {
                 chatSession = model.startChat({ history: [] });
                 userChats.set(msg.from, chatSession);
+                
+                // Keep chat history lean - remove very old sessions if memory is tight
+                if (userChats.size > 100) {
+                    const firstKey = userChats.keys().next().value;
+                    userChats.delete(firstKey);
+                }
             }
 
             const result = await chatSession.sendMessage(msg.body);
@@ -103,52 +139,34 @@ function setupClientEvents() {
             }
         } catch (error) {
             console.error("Gemini Error:", error);
-            msg.reply("I'm having trouble connecting right now. Please try later.");
         }
     });
 
+    // Handle Auth Failures
+    client.on('auth_failure', () => {
+        console.error('❌ Auth failure. You might need to re-scan.');
+        botReady = false;
+    });
+
     process.on('SIGINT', async () => {
-        console.log('\n🛑 Shutting down...');
         if (client) await client.destroy();
         process.exit(0);
     });
 }
 
-// 4. Web Server Logic (To view QR in browser)
+// 4. Web Server Logic (Memory Lean)
 const app = express();
 const port = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
     if (botReady) {
-        res.send(`
-            <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #f0f2f5;">
-                <h1 style="color: #25d366;">✅ Curaid Bot is ONLINE</h1>
-                <p>The bot is logged in and listening for messages.</p>
-                <div style="font-size: 50px;">🤖</div>
-            </body>
-        `);
+        res.send(`<body style="font-family:sans-serif;text-align:center;padding:50px;background:#f0f2f5;"><h1 style="color:#25d366;">✅ Curaid Bot Online</h1></body>`);
     } else {
         const qrPath = path.join(__dirname, 'qr.png');
         if (fs.existsSync(qrPath)) {
-            res.send(`
-                <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #f0f2f5;">
-                    <h1 style="color: #075e54;">📱 WhatsApp Login Required</h1>
-                    <p>Scan this QR code with your WhatsApp app (Linked Devices) to start the bot.</p>
-                    <div style="background: white; display: inline-block; padding: 20px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
-                        <img src="/qr" style="width: 300px; height: 300px;" />
-                    </div>
-                    <p style="color: #666;"><small>Auto-refreshes every 30s. Last updated: ${new Date().toLocaleTimeString()}</small></p>
-                    <script>setTimeout(() => location.reload(), 30000);</script>
-                </body>
-            `);
+            res.send(`<body style="font-family:sans-serif;text-align:center;padding:50px;background:#f0f2f5;"><h1>📱 WhatsApp Scan Required</h1><img src="/qr" style="width:300px;" /><p>Refreshes every 30s.</p><script>setTimeout(()=>location.reload(),30000);</script></body>`);
         } else {
-            res.send(`
-                <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #f0f2f5;">
-                    <h1>⏳ Preparing WhatsApp Bot...</h1>
-                    <p>Generating QR code, please wait a few seconds and refresh.</p>
-                    <script>setTimeout(() => location.reload(), 5000);</script>
-                </body>
-            `);
+            res.send(`<body style="font-family:sans-serif;text-align:center;padding:50px;background:#f0f2f5;"><h1>⏳ Preparing...</h1><script>setTimeout(()=>location.reload(),5000);</script></body>`);
         }
     }
 });
@@ -156,10 +174,10 @@ app.get('/', (req, res) => {
 app.get('/qr', (req, res) => {
     const qrPath = path.join(__dirname, 'qr.png');
     if (fs.existsSync(qrPath)) res.sendFile(qrPath);
-    else res.status(404).send('QR not generated yet');
+    else res.status(404).end();
 });
 
-app.listen(port, () => console.log(`🌍 Web interface: http://localhost:${port}`));
+app.listen(port, () => console.log(`🌍 Server on port ${port}`));
 
 // 5. Start!
 initializeBot();
