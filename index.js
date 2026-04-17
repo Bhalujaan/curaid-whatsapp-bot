@@ -19,27 +19,25 @@ const userChats = new Map();
 let botReady = false;
 let client;
 
-// EXTREME MEMORY SETTINGS (For 512MB RAM machines)
 const puppeteerOptions = {
     headless: true,
     args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',       // Heavy Linux process manager - off
-        '--single-process',   // Force everything into ONE memory process
-        '--disable-gpu',
-        '--disable-canvas-aa',
-        '--disable-2d-canvas-clip-aa',
-        '--disable-gl-drawing-for-tests',
-        '--js-flags="--max-old-space-size=350"' // Force aggressive garbage collection
+        '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote',
+        '--single-process', '--disable-gpu', '--js-flags="--max-old-space-size=350"'
     ],
 };
 
 // 3. Bot Initialization Logic
 async function initializeBot() {
+    console.log('🧪 Testing Gemini API connection...');
+    try {
+        const testResult = await model.generateContent("Hello?");
+        console.log('✅ Gemini API is alive and responsive!');
+    } catch (e) {
+        console.error('❌ Gemini API Error: Please check your API key!', e.message);
+    }
+
     if (process.env.MONGODB_URI) {
         console.log('🌐 [Cloud Mode] Initializing...');
         try {
@@ -60,54 +58,51 @@ async function initializeBot() {
     }
 
     setupClientEvents();
-    console.log('🚀 Launching WhatsApp Client... (Extreme Memory Mode)');
+    console.log('🚀 Launching WhatsApp Client...');
     client.initialize();
 }
 
 function setupClientEvents() {
     client.on('qr', (qr) => {
         qrcodeTerminal.generate(qr, {small: true});
-        qrcode.toFile(path.join(__dirname, 'qr.png'), qr, (err) => {
-            if (err) console.error('QR Save Error:', err);
-        });
+        qrcode.toFile(path.join(__dirname, 'qr.png'), qr, (err) => { if (err) console.error('QR Save Error:', err); });
     });
 
     client.on('ready', async () => {
         botReady = true;
         console.log('✅ Curaid Bot is ONLINE!');
-        
-        // AGGRESSIVE RESOURCE BLOCKING
         try {
             const page = await client.pupPage;
             if (page) {
                 await page.setRequestInterception(true);
                 page.on('request', (req) => {
-                    if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
-                        req.abort();
-                    } else {
-                        req.continue();
-                    }
+                    if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) req.abort();
+                    else req.continue();
                 });
-                console.log('🧠 Resource Blocking: Enabled.');
+                console.log('🧠 Asset Blocking: OK.');
             }
-        } catch (e) {
-            console.warn('⚠️ Interception setup skipped.');
-        }
+        } catch (e) { console.warn('⚠️ Interception skipped.'); }
     });
 
     client.on('message', async (msg) => {
-        if (msg.from.includes('@g.us') || msg.from === 'status@broadcast' || msg.isStatus) return;
+        console.log(`\n📥 [NEW MESSAGE] From: ${msg.from} Body: "${msg.body}"`);
+        
+        if (msg.from.includes('@g.us') || msg.from === 'status@broadcast' || msg.isStatus) {
+            console.log('⏭ [SKIP] Ignoring group/status message.');
+            return;
+        }
         
         try {
-            console.log(`\n💬 Message from ${msg.from}`);
+            console.log(`⏳ Triggering typing indicator...`);
             const chatWindow = await msg.getChat();
             await chatWindow.sendStateTyping();
 
+            console.log(`🧠 Consultation Gemini for response...`);
             let chatSession = userChats.get(msg.from);
             if (!chatSession) {
                 chatSession = model.startChat({ history: [] });
                 userChats.set(msg.from, chatSession);
-                if (userChats.size > 50) { // Keep even leaner memory
+                if (userChats.size > 50) {
                     const firstKey = userChats.keys().next().value;
                     userChats.delete(firstKey);
                 }
@@ -115,6 +110,7 @@ function setupClientEvents() {
 
             const result = await chatSession.sendMessage(msg.body);
             let responseText = result.response.text();
+            console.log(`📤 [GEMINI REPLY] Length: ${responseText.length} chars`);
 
             const fileMatch = responseText.match(/\[SEND_FILE:\s*([A-Z_]+)\]/i);
             if (fileMatch) {
@@ -131,8 +127,12 @@ function setupClientEvents() {
             } else {
                 await msg.reply(responseText);
             }
+            console.log(`✅ [SUCCESS] Reply sent to ${msg.from}`);
+
         } catch (error) {
-            console.error("Gemini Error:", error);
+            console.error("❌ Message Error:", error.message);
+            // Inform the user via WhatsApp that something went wrong
+            msg.reply(`I'm sorry, I encountered an error while processing your request: ${error.message}`);
         }
     });
 
@@ -142,11 +142,10 @@ function setupClientEvents() {
     });
 }
 
-// 4. Web Server Logic
 const app = express();
 const port = process.env.PORT || 3000;
 app.get('/', (req, res) => {
-    if (botReady) res.send(`✅ Bot Online`);
+    if (botReady) res.send(`✅ Bot Online - ${new Date().toLocaleTimeString()}`);
     else {
         const qrPath = path.join(__dirname, 'qr.png');
         if (fs.existsSync(qrPath)) res.send(`📱 Scan Required<br><img src="/qr" width="300"/><script>setTimeout(()=>location.reload(),30000);</script>`);
@@ -160,16 +159,13 @@ app.get('/qr', (req, res) => {
 });
 app.listen(port, () => console.log(`Server: ${port}`));
 
-// 5. THE SAFETY VALVE (Memory Watchdog)
-// This will restart the bot before Render kills it for hitting 512MB
 setInterval(() => {
     const memory = process.memoryUsage().rss / 1024 / 1024;
-    console.log(`📊 Memory Check: ${Math.round(memory)}MB / 512MB`);
-    if (memory > 450) { // 450MB threshold
-        console.log('⛔ MEMORY CRITICAL! Triggering safety restart...');
+    console.log(`📊 Memory: ${Math.round(memory)}MB/512MB`);
+    if (memory > 450) { 
+        console.log('⛔ MEMORY CRITICAL! Restarting...');
         process.exit(1); 
     }
 }, 60000);
 
-// Launch!
 initializeBot();
