@@ -19,22 +19,22 @@ const userChats = new Map();
 let botReady = false;
 let client;
 
-// Memory-optimized Puppeteer settings
+// EXTREME MEMORY SETTINGS (For 512MB RAM machines)
 const puppeteerOptions = {
     headless: true,
-    executablePath: process.env.CHROME_PATH || null, // Allow custom chrome path
     args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
-        '--no-zygote',
+        '--no-zygote',       // Heavy Linux process manager - off
+        '--single-process',   // Force everything into ONE memory process
         '--disable-gpu',
-        '--js-flags="--max-old-space-size=400"', // Limit V8 heap memory
-        '--disable-extensions',
-        '--disable-default-apps',
-        '--no-pings'
+        '--disable-canvas-aa',
+        '--disable-2d-canvas-clip-aa',
+        '--disable-gl-drawing-for-tests',
+        '--js-flags="--max-old-space-size=350"' // Force aggressive garbage collection
     ],
 };
 
@@ -42,7 +42,6 @@ const puppeteerOptions = {
 async function initializeBot() {
     if (process.env.MONGODB_URI) {
         console.log('🌐 [Cloud Mode] Initializing...');
-        console.log('⏳ Connecting to MongoDB Atlas...');
         try {
             await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
             console.log('✅ MongoDB Connected.');
@@ -61,7 +60,7 @@ async function initializeBot() {
     }
 
     setupClientEvents();
-    console.log('🚀 Launching WhatsApp Client...');
+    console.log('🚀 Launching WhatsApp Client... (Extreme Memory Mode)');
     client.initialize();
 }
 
@@ -77,8 +76,7 @@ function setupClientEvents() {
         botReady = true;
         console.log('✅ Curaid Bot is ONLINE!');
         
-        // --- MEMORY OPTIMIZATION ---
-        // Block images, styles, and fonts to save RAM
+        // AGGRESSIVE RESOURCE BLOCKING
         try {
             const page = await client.pupPage;
             if (page) {
@@ -90,14 +88,12 @@ function setupClientEvents() {
                         req.continue();
                     }
                 });
-                console.log('🧠 Memory Optimization: Heavy assets blocked successfully.');
+                console.log('🧠 Resource Blocking: Enabled.');
             }
         } catch (e) {
-            console.warn('⚠️ Could not set up request interception, but bot is still running.');
+            console.warn('⚠️ Interception setup skipped.');
         }
     });
-
-    client.on('remote_session_saved', () => console.log('💾 Session saved to MongoDB!'));
 
     client.on('message', async (msg) => {
         if (msg.from.includes('@g.us') || msg.from === 'status@broadcast' || msg.isStatus) return;
@@ -111,9 +107,7 @@ function setupClientEvents() {
             if (!chatSession) {
                 chatSession = model.startChat({ history: [] });
                 userChats.set(msg.from, chatSession);
-                
-                // Keep chat history lean - remove very old sessions if memory is tight
-                if (userChats.size > 100) {
+                if (userChats.size > 50) { // Keep even leaner memory
                     const firstKey = userChats.keys().next().value;
                     userChats.delete(firstKey);
                 }
@@ -142,42 +136,40 @@ function setupClientEvents() {
         }
     });
 
-    // Handle Auth Failures
-    client.on('auth_failure', () => {
-        console.error('❌ Auth failure. You might need to re-scan.');
-        botReady = false;
-    });
-
     process.on('SIGINT', async () => {
         if (client) await client.destroy();
         process.exit(0);
     });
 }
 
-// 4. Web Server Logic (Memory Lean)
+// 4. Web Server Logic
 const app = express();
 const port = process.env.PORT || 3000;
-
 app.get('/', (req, res) => {
-    if (botReady) {
-        res.send(`<body style="font-family:sans-serif;text-align:center;padding:50px;background:#f0f2f5;"><h1 style="color:#25d366;">✅ Curaid Bot Online</h1></body>`);
-    } else {
+    if (botReady) res.send(`✅ Bot Online`);
+    else {
         const qrPath = path.join(__dirname, 'qr.png');
-        if (fs.existsSync(qrPath)) {
-            res.send(`<body style="font-family:sans-serif;text-align:center;padding:50px;background:#f0f2f5;"><h1>📱 WhatsApp Scan Required</h1><img src="/qr" style="width:300px;" /><p>Refreshes every 30s.</p><script>setTimeout(()=>location.reload(),30000);</script></body>`);
-        } else {
-            res.send(`<body style="font-family:sans-serif;text-align:center;padding:50px;background:#f0f2f5;"><h1>⏳ Preparing...</h1><script>setTimeout(()=>location.reload(),5000);</script></body>`);
-        }
+        if (fs.existsSync(qrPath)) res.send(`📱 Scan Required<br><img src="/qr" width="300"/><script>setTimeout(()=>location.reload(),30000);</script>`);
+        else res.send(`⏳ Preparing...<script>setTimeout(()=>location.reload(),5000);</script>`);
     }
 });
-
 app.get('/qr', (req, res) => {
     const qrPath = path.join(__dirname, 'qr.png');
     if (fs.existsSync(qrPath)) res.sendFile(qrPath);
     else res.status(404).end();
 });
+app.listen(port, () => console.log(`Server: ${port}`));
 
-app.listen(port, () => console.log(`🌍 Server on port ${port}`));
+// 5. THE SAFETY VALVE (Memory Watchdog)
+// This will restart the bot before Render kills it for hitting 512MB
+setInterval(() => {
+    const memory = process.memoryUsage().rss / 1024 / 1024;
+    console.log(`📊 Memory Check: ${Math.round(memory)}MB / 512MB`);
+    if (memory > 450) { // 450MB threshold
+        console.log('⛔ MEMORY CRITICAL! Triggering safety restart...');
+        process.exit(1); 
+    }
+}, 60000);
 
-// 5. Start!
+// Launch!
 initializeBot();
