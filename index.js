@@ -41,9 +41,14 @@ const puppeteerOptions = {
 
 async function initializeBot() {
     if (process.env.MONGODB_URI) {
-        console.log('🌐 Cloud Mode: Connecting to MongoDB for session storage...');
+        console.log('🌐 [Cloud Mode] Initializing...');
+        console.log('⏳ Connecting to MongoDB Atlas...');
         try {
-            await mongoose.connect(process.env.MONGODB_URI);
+            await mongoose.connect(process.env.MONGODB_URI, {
+                serverSelectionTimeoutMS: 5000 // 5 seconds timeout
+            });
+            console.log('✅ MongoDB Connected Successfully!');
+            
             const store = new MongoStore({ mongoose: mongoose });
             
             client = new Client({
@@ -55,7 +60,8 @@ async function initializeBot() {
             });
             console.log('✅ RemoteAuth initialized.');
         } catch (err) {
-            console.error('❌ MongoDB Connection Error:', err);
+            console.error('❌ MongoDB Connection Error:', err.message);
+            console.log('💡 TIP: Make sure your MongoDB IP whitelist includes 0.0.0.0/0 (All IPs).');
             process.exit(1);
         }
     } else {
@@ -67,6 +73,7 @@ async function initializeBot() {
     }
 
     setupClientEvents();
+    console.log('🚀 Launching WhatsApp Client...');
     client.initialize();
 }
 
