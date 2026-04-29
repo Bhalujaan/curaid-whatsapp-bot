@@ -3,8 +3,6 @@ import { fileURLToPath } from 'url';
 import { dirname, join, basename } from 'path';
 import fs from 'fs';
 import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
-import qrcodeTerminal from 'qrcode-terminal';
-import qrcode from 'qrcode';
 import Groq from 'groq-sdk';
 import express from 'express';
 
@@ -137,20 +135,13 @@ async function connectToWhatsApp() {
     const sock = makeWASocket({
         auth:               state,
         logger:             silentLogger,
-        printQRInTerminal:  false,
+        printQRInTerminal:  true,
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-            qrcodeTerminal.generate(qr, { small: true });
-            qrcode.toFile('qr.png', qr, (err) => {
-                if (!err) console.log('QR saved as qr.png');
-            });
-        }
+        const { connection, lastDisconnect } = update;
 
         if (connection === 'open')  console.log('Curaid Bot is ready.');
 

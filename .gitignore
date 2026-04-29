@@ -4,5 +4,4 @@ node_modules/
 .wwebjs_cache/
 auth_info_baileys/
 chat_history.json
-qr.png
 out.json
