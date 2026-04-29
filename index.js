@@ -1,0 +1,221 @@
+import 'dotenv/config';
+import { fileURLToPath } from 'url';
+import { dirname, join, basename } from 'path';
+import fs from 'fs';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
+import qrcodeTerminal from 'qrcode-terminal';
+import qrcode from 'qrcode';
+import Groq from 'groq-sdk';
+import express from 'express';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ── Config ────────────────────────────────────────────────────────────────────
+const MODEL_NAME    = 'llama-3.3-70b-versatile';
+const SESSION_TTL   = 7 * 24 * 60 * 60 * 1000; // 7 days
+const MAX_TURNS     = 20;
+const HISTORY_FILE  = join(__dirname, 'chat_history.json');
+const AUTH_DIR      = join(__dirname, 'auth_info_baileys');
+
+// To add a new sendable document: drop the PDF in documents/ and add one line here.
+const DOCUMENTS = {
+    UDID_FORM:     join(__dirname, 'documents', 'udid_form.pdf'),
+    NIRAMAYA_FORM: join(__dirname, 'documents', 'niramaya_form.pdf'),
+};
+
+// ── Gemini ────────────────────────────────────────────────────────────────────
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const systemInstruction = fs.readFileSync(join(__dirname, 'knowledge.txt'), 'utf-8');
+
+// ── Session store ─────────────────────────────────────────────────────────────
+// userId → { history: Content[], lastActive: number, queue: Promise }
+const sessions = new Map();
+
+function getSession(userId) {
+    if (!sessions.has(userId)) {
+        sessions.set(userId, { history: [], lastActive: Date.now(), queue: Promise.resolve() });
+        console.log(`[Session] New: ${userId}`);
+    }
+    return sessions.get(userId);
+}
+
+// ── History persistence ───────────────────────────────────────────────────────
+function loadHistory() {
+    try {
+        if (!fs.existsSync(HISTORY_FILE)) return;
+        const data = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf-8'));
+        for (const [userId, entry] of Object.entries(data)) {
+            sessions.set(userId, {
+                history:    entry.history    || [],
+                lastActive: entry.lastActive || Date.now(),
+                queue:      Promise.resolve(),
+            });
+        }
+        console.log(`[Session] Restored ${sessions.size} session(s)`);
+    } catch (e) {
+        console.error('[Session] Load failed:', e.message);
+    }
+}
+
+function saveHistory() {
+    const data = {};
+    for (const [userId, s] of sessions) {
+        data[userId] = { history: s.history, lastActive: s.lastActive };
+    }
+    try { fs.writeFileSync(HISTORY_FILE, JSON.stringify(data)); }
+    catch (e) { console.error('[Session] Save failed:', e.message); }
+}
+
+setInterval(saveHistory, 5 * 60 * 1000);
+
+// ── Session TTL cleanup ───────────────────────────────────────────────────────
+function cleanupSessions() {
+    const cutoff = Date.now() - SESSION_TTL;
+    let removed = 0;
+    for (const [userId, s] of sessions) {
+        if (s.lastActive < cutoff) { sessions.delete(userId); removed++; }
+    }
+    if (removed > 0) { console.log(`[Session] Evicted ${removed}`); saveHistory(); }
+}
+setInterval(cleanupSessions, 60 * 60 * 1000);
+
+// ── Core message handler ──────────────────────────────────────────────────────
+async function handleMessage(sock, jid, text) {
+    const session = getSession(jid);
+    session.lastActive = Date.now();
+
+    const completion = await groq.chat.completions.create({
+        model: MODEL_NAME,
+        messages: [
+            { role: 'system', content: systemInstruction },
+            ...session.history.map(h => ({
+                role:    h.role === 'model' ? 'assistant' : 'user',
+                content: h.parts[0].text,
+            })),
+            { role: 'user', content: text },
+        ],
+        max_tokens: 1024,
+    });
+    let responseText = completion.choices[0].message.content;
+
+    const fileMatch = responseText.match(/\[SEND_FILE:\s*([A-Z_]+)\]/i);
+    if (fileMatch) {
+        const key = fileMatch[1].toUpperCase();
+        responseText = responseText.replace(fileMatch[0], '').trim();
+        await sock.sendMessage(jid, { text: responseText });
+
+        const filePath = DOCUMENTS[key];
+        if (filePath && fs.existsSync(filePath)) {
+            await sock.sendMessage(jid, {
+                document: fs.readFileSync(filePath),
+                mimetype: 'application/pdf',
+                fileName: basename(filePath),
+            });
+            console.log(`[File] Sent ${key} → ${jid}`);
+        } else {
+            console.error(`[File] No file for key: ${key}`);
+        }
+    } else {
+        await sock.sendMessage(jid, { text: responseText });
+    }
+
+    session.history.push(
+        { role: 'user',  parts: [{ text }] },
+        { role: 'model', parts: [{ text: responseText }] }
+    );
+    if (session.history.length > MAX_TURNS * 2) session.history.splice(0, 2);
+}
+
+// ── WhatsApp connection ───────────────────────────────────────────────────────
+const noop = () => {};
+const silentLogger = { level: 'silent', trace: noop, debug: noop, info: noop, warn: noop, error: noop, fatal: noop };
+silentLogger.child = () => silentLogger;
+
+async function connectToWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+
+    const sock = makeWASocket({
+        auth:               state,
+        logger:             silentLogger,
+        printQRInTerminal:  false,
+    });
+
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            qrcodeTerminal.generate(qr, { small: true });
+            qrcode.toFile('qr.png', qr, (err) => {
+                if (!err) console.log('QR saved as qr.png');
+            });
+        }
+
+        if (connection === 'open')  console.log('Curaid Bot is ready.');
+
+        if (connection === 'close') {
+            const code = lastDisconnect?.error?.output?.statusCode;
+            const shouldReconnect = code !== DisconnectReason.loggedOut;
+            console.warn(`[WhatsApp] Disconnected (${code}). ${shouldReconnect ? 'Reconnecting...' : 'Logged out.'}`);
+            if (shouldReconnect) connectToWhatsApp();
+        }
+    });
+
+    sock.ev.on('messages.upsert', ({ messages, type }) => {
+        if (type !== 'notify') return;
+
+        for (const msg of messages) {
+            if (msg.key.fromMe) continue;
+
+            const jid = msg.key.remoteJid;
+            if (!jid || jid === 'status@broadcast' || jid.endsWith('@g.us')) continue;
+
+            const text = (
+                msg.message?.conversation ||
+                msg.message?.extendedTextMessage?.text ||
+                ''
+            ).trim();
+
+            if (!text) continue;
+
+            console.log(`[msg] ${jid}: ${text}`);
+
+            const session = getSession(jid);
+            sock.sendPresenceUpdate('composing', jid).catch(() => {});
+
+            // Serialise per-user messages to prevent out-of-order Gemini calls
+            session.queue = session.queue
+                .then(() => handleMessage(sock, jid, text))
+                .catch(async (err) => {
+                    console.error(`[Error] ${jid}:`, err);
+                    const isRateLimit = err.status === 429 || err.message?.includes('RESOURCE_EXHAUSTED');
+                    await sock.sendMessage(jid, {
+                        text: isRateLimit
+                            ? "I'm receiving too many messages right now — please wait a minute. 💙"
+                            : "I'm having trouble connecting right now. Please try again in a moment.",
+                    }).catch(() => {});
+                });
+        }
+    });
+}
+
+// ── Keep-alive server ─────────────────────────────────────────────────────────
+const app = express();
+app.get('/', (_req, res) => res.send('Curaid AI is running.'));
+app.listen(process.env.PORT || 3000, () =>
+    console.log(`Server on port ${process.env.PORT || 3000}`)
+);
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+loadHistory();
+connectToWhatsApp().catch(console.error);
+
+// ── Graceful shutdown ─────────────────────────────────────────────────────────
+function shutdown() {
+    console.log('[Shutdown] Saving history...');
+    saveHistory();
+    process.exit(0);
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

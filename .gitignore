@@ -1,0 +1,8 @@
+node_modules/
+.env
+.wwebjs_auth/
+.wwebjs_cache/
+auth_info_baileys/
+chat_history.json
+qr.png
+out.json
