@@ -134,12 +134,15 @@ const silentLogger = { level: 'silent', trace: noop, debug: noop, info: noop, wa
 silentLogger.child = () => silentLogger;
 
 async function connectToWhatsApp() {
+    console.log('[WA] Loading auth state...');
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    console.log('[WA] Auth loaded. Creating socket...');
 
     const sock = makeWASocket({
         auth:   state,
         logger: silentLogger,
     });
+    console.log('[WA] Socket created. Waiting for connection...');
 
     sock.ev.on('creds.update', saveCreds);
 
