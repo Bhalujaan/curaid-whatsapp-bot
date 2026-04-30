@@ -83,10 +83,15 @@ async function handleMessage(sock, jid, text) {
     const session = getSession(jid);
     session.lastActive = Date.now();
 
+    const isFirstMessage = session.history.length === 0;
+    const systemPrompt = isFirstMessage
+        ? systemInstruction + '\n\nCRITICAL INSTRUCTION: This is the user\'s VERY FIRST message ever. You MUST greet them warmly and ask for their language preference (English or Hindi/Hinglish) BEFORE addressing their question. Do not skip this under any circumstances.'
+        : systemInstruction;
+
     const completion = await groq.chat.completions.create({
         model: MODEL_NAME,
         messages: [
-            { role: 'system', content: systemInstruction },
+            { role: 'system', content: systemPrompt },
             ...session.history.map(h => ({
                 role:    h.role === 'model' ? 'assistant' : 'user',
                 content: h.parts[0].text,
