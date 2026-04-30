@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { fileURLToPath } from 'url';
 import { dirname, join, basename } from 'path';
 import fs from 'fs';
-import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import Groq from 'groq-sdk';
 import express from 'express';
@@ -136,11 +136,18 @@ silentLogger.child = () => silentLogger;
 async function connectToWhatsApp() {
     console.log('[WA] Loading auth state...');
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-    console.log('[WA] Auth loaded. Creating socket...');
+    console.log('[WA] Auth loaded. Fetching latest WA version...');
+
+    const { version } = await fetchLatestBaileysVersion();
+    console.log(`[WA] Using version ${version.join('.')}. Creating socket...`);
 
     const sock = makeWASocket({
-        auth:   state,
-        logger: silentLogger,
+        version,
+        auth:                   state,
+        logger:                 silentLogger,
+        browser:                ['Curaid AI', 'Chrome', '120.0.0'],
+        connectTimeoutMs:       60_000,
+        keepAliveIntervalMs:    30_000,
     });
     console.log('[WA] Socket created. Waiting for connection...');
 
