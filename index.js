@@ -220,11 +220,13 @@ app.get('/', async (_req, res) => {
         try {
             const qrImage = await QRCode.toDataURL(latestQR);
             return res.send(`
-                <html><body style="font-family:sans-serif;text-align:center;padding:40px;background:#f9f9f9">
+                <html>
+                <head><meta http-equiv="refresh" content="18"></head>
+                <body style="font-family:sans-serif;text-align:center;padding:40px;background:#f9f9f9">
                     <h2 style="color:#1565c0">Connect Curaid AI to WhatsApp</h2>
                     <img src="${qrImage}" style="width:280px;height:280px;display:block;margin:20px auto;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.15)"/>
                     <p style="color:#333">Open WhatsApp → <b>Linked Devices</b> → <b>Link a Device</b></p>
-                    <p style="color:#888;font-size:13px">QR expires in ~20 seconds — refresh the page if it stops working.</p>
+                    <p style="color:#888;font-size:13px">Page auto-refreshes every 18s for a fresh QR.</p>
                 </body></html>
             `);
         } catch (e) {
@@ -232,9 +234,11 @@ app.get('/', async (_req, res) => {
         }
     }
     res.send(`
-        <html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#f9f9f9">
+        <html>
+        <head><meta http-equiv="refresh" content="3"></head>
+        <body style="font-family:sans-serif;text-align:center;padding:60px;background:#f9f9f9">
             <h2 style="color:#555">Curaid AI is starting up...</h2>
-            <p>Refresh in a few seconds.</p>
+            <p style="color:#888">This page refreshes automatically.</p>
         </body></html>
     `);
 });
@@ -245,7 +249,9 @@ app.listen(process.env.PORT || 3000, () =>
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 loadHistory();
-connectToWhatsApp().catch(console.error);
+connectToWhatsApp().catch((err) => {
+    console.error('[Fatal] connectToWhatsApp crashed:', err);
+});
 
 // ── Graceful shutdown ─────────────────────────────────────────────────────────
 function shutdown() {
