@@ -171,9 +171,13 @@ async function connectToWhatsApp() {
         if (connection === 'close') {
             botConnected = false;
             const code = lastDisconnect?.error?.output?.statusCode;
-            const shouldReconnect = code !== DisconnectReason.loggedOut;
-            console.warn(`[WhatsApp] Disconnected (${code}). ${shouldReconnect ? 'Reconnecting in 5s...' : 'Logged out — redeploy to re-scan QR.'}`);
-            if (shouldReconnect) setTimeout(connectToWhatsApp, 5000);
+            if (code === DisconnectReason.loggedOut) {
+                console.warn('[WhatsApp] Logged out — clearing auth and regenerating QR...');
+                fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+            } else {
+                console.warn(`[WhatsApp] Disconnected (${code}). Reconnecting in 5s...`);
+            }
+            setTimeout(connectToWhatsApp, 5000);
         }
     });
 
