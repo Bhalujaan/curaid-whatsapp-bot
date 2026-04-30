@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join, basename } from 'path';
 import fs from 'fs';
 import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
-import qrcodeTerminal from 'qrcode-terminal';
+import QRCode from 'qrcode';
 import Groq from 'groq-sdk';
 import express from 'express';
 
@@ -11,7 +11,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const MODEL_NAME    = 'llama-3.3-70b-versatile';
-const SESSION_TTL   = 7 * 24 * 60 * 60 * 1000; // 7 days
+const SESSION_TTL   = 7 * 24 * 60 * 60 * 1000;
 const MAX_TURNS     = 20;
 const HISTORY_FILE  = join(__dirname, 'chat_history.json');
 const AUTH_DIR      = join(__dirname, 'auth_info_baileys');
@@ -22,7 +22,7 @@ const DOCUMENTS = {
     NIRAMAYA_FORM: join(__dirname, 'documents', 'niramaya_form.pdf'),
 };
 
-// ── Gemini ────────────────────────────────────────────────────────────────────
+// ── Groq ──────────────────────────────────────────────────────────────────────
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const systemInstruction = fs.readFileSync(join(__dirname, 'knowledge.txt'), 'utf-8');
 
@@ -125,7 +125,10 @@ async function handleMessage(sock, jid, text) {
     if (session.history.length > MAX_TURNS * 2) session.history.splice(0, 2);
 }
 
-// ── WhatsApp connection ───────────────────────────────────────────────────────
+// ── WhatsApp connection state (shared with Express) ───────────────────────────
+let latestQR      = null;
+let botConnected  = false;
+
 const noop = () => {};
 const silentLogger = { level: 'silent', trace: noop, debug: noop, info: noop, warn: noop, error: noop, fatal: noop };
 silentLogger.child = () => silentLogger;
@@ -144,18 +147,22 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log('\n[WhatsApp] Scan this QR code to connect:\n');
-            qrcodeTerminal.generate(qr, { small: true });
+            latestQR     = qr;
+            botConnected = false;
+            console.log('[WhatsApp] QR ready — visit your Render URL to scan');
         }
 
         if (connection === 'open') {
+            latestQR     = null;
+            botConnected = true;
             console.log('Curaid Bot is ready.');
         }
 
         if (connection === 'close') {
+            botConnected = false;
             const code = lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = code !== DisconnectReason.loggedOut;
-            console.warn(`[WhatsApp] Disconnected (${code}). ${shouldReconnect ? 'Reconnecting in 5s...' : 'Logged out — restart to re-scan QR.'}`);
+            console.warn(`[WhatsApp] Disconnected (${code}). ${shouldReconnect ? 'Reconnecting in 5s...' : 'Logged out — redeploy to re-scan QR.'}`);
             if (shouldReconnect) setTimeout(connectToWhatsApp, 5000);
         }
     });
@@ -182,7 +189,6 @@ async function connectToWhatsApp() {
             const session = getSession(jid);
             sock.sendPresenceUpdate('composing', jid).catch(() => {});
 
-            // Serialise per-user messages to prevent out-of-order Gemini calls
             session.queue = session.queue
                 .then(() => handleMessage(sock, jid, text))
                 .catch(async (err) => {
@@ -198,9 +204,41 @@ async function connectToWhatsApp() {
     });
 }
 
-// ── Keep-alive server ─────────────────────────────────────────────────────────
+// ── Web server ────────────────────────────────────────────────────────────────
 const app = express();
-app.get('/', (_req, res) => res.send('Curaid AI is running.'));
+
+app.get('/', async (_req, res) => {
+    if (botConnected) {
+        return res.send(`
+            <html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#f9f9f9">
+                <h2 style="color:#2e7d32">✅ Curaid AI is live</h2>
+                <p style="color:#555">Bot is connected and responding on WhatsApp.</p>
+            </body></html>
+        `);
+    }
+    if (latestQR) {
+        try {
+            const qrImage = await QRCode.toDataURL(latestQR);
+            return res.send(`
+                <html><body style="font-family:sans-serif;text-align:center;padding:40px;background:#f9f9f9">
+                    <h2 style="color:#1565c0">Connect Curaid AI to WhatsApp</h2>
+                    <img src="${qrImage}" style="width:280px;height:280px;display:block;margin:20px auto;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.15)"/>
+                    <p style="color:#333">Open WhatsApp → <b>Linked Devices</b> → <b>Link a Device</b></p>
+                    <p style="color:#888;font-size:13px">QR expires in ~20 seconds — refresh the page if it stops working.</p>
+                </body></html>
+            `);
+        } catch (e) {
+            return res.send('QR generation failed. Check logs.');
+        }
+    }
+    res.send(`
+        <html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#f9f9f9">
+            <h2 style="color:#555">Curaid AI is starting up...</h2>
+            <p>Refresh in a few seconds.</p>
+        </body></html>
+    `);
+});
+
 app.listen(process.env.PORT || 3000, () =>
     console.log(`Server on port ${process.env.PORT || 3000}`)
 );
