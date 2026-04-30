@@ -3,6 +3,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join, basename } from 'path';
 import fs from 'fs';
 import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
+import qrcodeTerminal from 'qrcode-terminal';
 import Groq from 'groq-sdk';
 import express from 'express';
 
@@ -133,23 +134,29 @@ async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
     const sock = makeWASocket({
-        auth:               state,
-        logger:             silentLogger,
-        printQRInTerminal:  true,
+        auth:   state,
+        logger: silentLogger,
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
 
-        if (connection === 'open')  console.log('Curaid Bot is ready.');
+        if (qr) {
+            console.log('\n[WhatsApp] Scan this QR code to connect:\n');
+            qrcodeTerminal.generate(qr, { small: true });
+        }
+
+        if (connection === 'open') {
+            console.log('Curaid Bot is ready.');
+        }
 
         if (connection === 'close') {
             const code = lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = code !== DisconnectReason.loggedOut;
-            console.warn(`[WhatsApp] Disconnected (${code}). ${shouldReconnect ? 'Reconnecting...' : 'Logged out.'}`);
-            if (shouldReconnect) connectToWhatsApp();
+            console.warn(`[WhatsApp] Disconnected (${code}). ${shouldReconnect ? 'Reconnecting in 5s...' : 'Logged out — restart to re-scan QR.'}`);
+            if (shouldReconnect) setTimeout(connectToWhatsApp, 5000);
         }
     });
 
