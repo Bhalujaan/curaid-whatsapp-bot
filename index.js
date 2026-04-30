@@ -143,14 +143,16 @@ async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     console.log('[WA] Auth loaded. Fetching latest WA version...');
 
-    const { version } = await fetchLatestBaileysVersion();
+    // Bypass 408 server rejections by using a known-good hardcoded WA Web version
+    // const { version } = await fetchLatestBaileysVersion();
+    const version = [2, 3000, 1015901307];
     console.log(`[WA] Using version ${version.join('.')}. Creating socket...`);
 
     const sock = makeWASocket({
         version,
         auth:                   state,
         logger:                 silentLogger,
-        browser:                ['Curaid AI', 'Chrome', '120.0.0'],
+        browser:                ['Ubuntu', 'Chrome', '20.0.04'],
         connectTimeoutMs:       60_000,
         keepAliveIntervalMs:    30_000,
     });
@@ -176,8 +178,8 @@ async function connectToWhatsApp() {
         if (connection === 'close') {
             botConnected = false;
             const code = lastDisconnect?.error?.output?.statusCode;
-            if (code === DisconnectReason.loggedOut) {
-                console.warn('[WhatsApp] Logged out — clearing auth and regenerating QR...');
+            if (code === DisconnectReason.loggedOut || code === 408) {
+                console.warn(`[WhatsApp] Disconnected (${code}) — clearing auth and regenerating QR...`);
                 fs.rmSync(AUTH_DIR, { recursive: true, force: true });
             } else {
                 console.warn(`[WhatsApp] Disconnected (${code}). Reconnecting in 5s...`);
